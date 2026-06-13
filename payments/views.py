@@ -16,7 +16,7 @@ from django.shortcuts   import render, redirect, get_object_or_404
 from django.utils       import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-
+        
 from .models import Order, WebhookLog
 
 logger = logging.getLogger(__name__)
@@ -125,47 +125,52 @@ def payment_status(request, reference):
     def pending_response():
         return JsonResponse({'status': order.status, 'is_paid': False, 'redirect_url': None, 'reference': order.reference})
 
-    # Already paid in DB
     if order.is_paid:
         return success_response()
 
-    # Order too old — stop checking
     age = (timezone.now() - order.created_at).total_seconds()
     if age > 600:
         return pending_response()
 
-    # ── FIX BUG 1: don't check Bakong until order is at least 5 seconds old ──
-    if age < 5:
+    if age < 10:
         return pending_response()
 
-    # Ask Bakong API
     if order.qr_md5 and settings.BAKONG_TOKEN:
         try:
             khqr = KHQR(settings.BAKONG_TOKEN)
 
-            # ── FIX BUG 1: verify the MD5 belongs to THIS order only ──
-            # check_payment returns True if transaction exists — but we also
-            # make sure no other order already claimed this payment
-            already_claimed = Order.objects.filter(
-                qr_md5=order.qr_md5,
-                status=Order.STATUS_PAID,
-            ).exclude(id=order.id).exists()
+            # ── KEY FIX: check if this MD5 was paid AFTER the order was created ──
+            from bakong_khqr.response import ResponseCode
+            result = khqr.check_transaction(order.qr_md5)
 
-            if already_claimed:
-                logger.warning('MD5 %s already claimed by another order', order.qr_md5)
-                return pending_response()
-
-            is_paid = khqr.check_payment(order.qr_md5)
-
-            if is_paid:
-                order.status  = Order.STATUS_PAID
-                order.paid_at = timezone.now()
-                order.save()
-                logger.info('Order %s marked PAID via polling', reference)
-                return success_response()
+            if result and result.get('responseCode') == ResponseCode.SUCCESS:
+                transaction_time = result.get('data', {}).get('createdDateMs')
+                if transaction_time:
+                    import datetime
+                    tx_time = datetime.datetime.fromtimestamp(transaction_time / 1000, tz=datetime.timezone.utc)
+                    # Only confirm if the transaction happened AFTER the order was created
+                    if tx_time > order.created_at:
+                        order.status  = Order.STATUS_PAID
+                        order.paid_at = timezone.now()
+                        order.save()
+                        logger.info('Order %s marked PAID — tx time %s after order time %s', reference, tx_time, order.created_at)
+                        return success_response()
+                    else:
+                        logger.warning('Order %s rejected — tx time %s is BEFORE order created %s', reference, tx_time, order.created_at)
+                        return pending_response()
 
         except Exception as e:
-            logger.error('Bakong check_payment failed for %s: %s', reference, e)
+            logger.error('Bakong check failed for %s: %s', reference, e)
+            # fallback to basic check_payment
+            try:
+                is_paid = KHQR(settings.BAKONG_TOKEN).check_payment(order.qr_md5)
+                if is_paid:
+                    order.status  = Order.STATUS_PAID
+                    order.paid_at = timezone.now()
+                    order.save()
+                    return success_response()
+            except Exception as e2:
+                logger.error('Bakong fallback failed for %s: %s', reference, e2)
 
     return pending_response()
 
