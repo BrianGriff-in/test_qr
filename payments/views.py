@@ -139,7 +139,6 @@ def payment_status(request, reference):
         try:
             khqr = KHQR(settings.BAKONG_TOKEN)
 
-            # ── KEY FIX: check if this MD5 was paid AFTER the order was created ──
             from bakong_khqr.response import ResponseCode
             result = khqr.check_transaction(order.qr_md5)
 
@@ -148,32 +147,20 @@ def payment_status(request, reference):
                 if transaction_time:
                     import datetime
                     tx_time = datetime.datetime.fromtimestamp(transaction_time / 1000, tz=datetime.timezone.utc)
-                    # Only confirm if the transaction happened AFTER the order was created
                     if tx_time > order.created_at:
                         order.status  = Order.STATUS_PAID
                         order.paid_at = timezone.now()
                         order.save()
-                        logger.info('Order %s marked PAID — tx time %s after order time %s', reference, tx_time, order.created_at)
+                        logger.info('Order %s marked PAID — tx after order creation', reference)
                         return success_response()
                     else:
-                        logger.warning('Order %s rejected — tx time %s is BEFORE order created %s', reference, tx_time, order.created_at)
-                        return pending_response()
+                        logger.warning('Order %s rejected — tx is before order creation', reference)
 
         except Exception as e:
             logger.error('Bakong check failed for %s: %s', reference, e)
-            # fallback to basic check_payment
-            try:
-                is_paid = KHQR(settings.BAKONG_TOKEN).check_payment(order.qr_md5)
-                if is_paid:
-                    order.status  = Order.STATUS_PAID
-                    order.paid_at = timezone.now()
-                    order.save()
-                    return success_response()
-            except Exception as e2:
-                logger.error('Bakong fallback failed for %s: %s', reference, e2)
+            # ← NO FALLBACK. If Bakong API fails, just return pending and retry next poll.
 
     return pending_response()
-
 
 @require_http_methods(['GET'])
 def payment_success(request, reference):
