@@ -54,11 +54,12 @@ def _build_khqr(order: Order) -> dict:
     return {'qr_string': qr_string, 'qr_md5': qr_md5}
 
 
-def _verify_webhook_signature(body: bytes, signature: str) -> bool:
-    if not signature:
+def _verify_webhook_signature(body: bytes, signature: str, timestamp: str) -> bool:
+    if not signature or not timestamp:
         return False
     secret   = settings.KHQR_WEBHOOK_SECRET.encode()
-    expected = hmac.new(secret, body, digestmod=hashlib.sha256).hexdigest()
+    message  = f'{timestamp}.{body.decode()}'.encode()
+    expected = hmac.new(secret, message, digestmod=hashlib.sha256).hexdigest()
     return hmac.compare_digest(signature, expected)
 
 
@@ -129,25 +130,8 @@ def payment_status(request, reference):
         return success_response()
 
     age = (timezone.now() - order.created_at).total_seconds()
-    if age > 600 or age < 10:
+    if age > 600:
         return pending_response()
-
-    if order.qr_md5 and settings.BAKONG_TOKEN:
-        try:
-            khqr    = KHQR(settings.BAKONG_TOKEN)
-            is_paid = khqr.check_payment(order.qr_md5)
-
-            logger.info('Bakong check_payment for %s: %s', reference, is_paid)
-
-            if is_paid:
-                order.status  = Order.STATUS_PAID
-                order.paid_at = timezone.now()
-                order.save()
-                logger.info('Order %s marked PAID', reference)
-                return success_response()
-
-        except Exception as e:
-            logger.error('Bakong check failed for %s: %s', reference, e)
 
     return pending_response()
 
@@ -169,10 +153,12 @@ def payment_failed(request, reference):
 def khqr_webhook(request):
     body      = request.body
     signature = request.headers.get('X-KHQR-Signature', '')
+    timestamp = request.headers.get('X-KHQR-Timestamp', '')
     ip        = _get_client_ip(request)
-    is_valid  = _verify_webhook_signature(body, signature)
+    is_valid  = _verify_webhook_signature(body, signature, timestamp)
 
     if not is_valid:
+        logger.warning('Invalid webhook signature from %s — sig=%s ts=%s', ip, signature, timestamp)
         WebhookLog.objects.create(raw_body=body.decode('utf-8', errors='replace'), signature=signature, signature_valid=False, ip_address=ip)
         return JsonResponse({'error': 'Invalid signature'}, status=403)
 
@@ -197,12 +183,21 @@ def khqr_webhook(request):
         order.paid_at         = timezone.now()
         order.webhook_payload = payload
         order.save()
+        logger.info('Order %s marked PAID via webhook', reference)
     elif status == 'failed':
         order.status          = Order.STATUS_FAILED
         order.webhook_payload = payload
         order.save()
+        logger.info('Order %s marked FAILED via webhook', reference)
 
-    WebhookLog.objects.create(order=order, raw_body=body.decode('utf-8', errors='replace'), signature=signature, signature_valid=True, payload=payload, ip_address=ip)
+    WebhookLog.objects.create(
+        order=order,
+        raw_body=body.decode('utf-8', errors='replace'),
+        signature=signature,
+        signature_valid=True,
+        payload=payload,
+        ip_address=ip,
+    )
     return JsonResponse({'ok': True, 'reference': reference})
 
 
@@ -267,10 +262,13 @@ def dev_check_transaction(request, reference):
     if not order.qr_md5:
         return JsonResponse({'error': 'No QR MD5'})
     khqr    = KHQR(settings.BAKONG_TOKEN)
+    result  = khqr.check_bulk_payments([order.qr_md5])
     is_paid = khqr.check_payment(order.qr_md5)
     return JsonResponse({
         'qr_md5':           order.qr_md5,
-        'is_paid':          is_paid,
+        'check_payment':    is_paid,
+        'bulk_result':      result,
+        'order_status':     order.status,
         'order_created_at': order.created_at.isoformat(),
     })
 
@@ -280,8 +278,11 @@ def dev_bakong_methods(request):
     khqr = KHQR(settings.BAKONG_TOKEN)
     return JsonResponse({'methods': [m for m in dir(khqr) if not m.startswith('_')]})
 
+
 @require_http_methods(['GET'])
 def dev_bulk_check(request, reference):
+    if not settings.DEBUG:
+        return JsonResponse({'error': 'DEBUG only'}, status=403)
     order = get_object_or_404(Order, reference=reference)
     if not order.qr_md5:
         return JsonResponse({'error': 'No QR MD5'})
