@@ -1,0 +1,58 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Checkout — KHQR Demo</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background: #f5f5f5; font-family: 'Segoe UI', sans-serif; }
+    .app-card { border-radius: 16px; padding: 32px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .khqr-red { color: #d0021b; }
+    .btn-khqr { background: #d0021b; border: none; border-radius: 10px; padding: 12px; font-weight: 600; }
+    .btn-khqr:hover { background: #a8001a; }
+    .product-row { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+    .total-row { padding: 16px 0; border-top: 2px solid #eee; margin-top: 8px; }
+    .method-box { background: #fff8f8; border: 1px solid #ffd5d5; border-radius: 10px; padding: 12px 16px; }
+    .khqr-badge { background: #d0021b; color: white; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+    .footer-note { font-size: 11px; color: #aaa; }
+  </style>
+</head>
+<body class="d-flex align-items-center justify-content-center p-3" style="min-height:100vh;">
+  <div class="app-card bg-white" style="max-width:440px;width:100%;">
+    <h5 class="fw-semibold mb-1"><i class="bi bi-bag-check me-2 khqr-red"></i>Order Summary</h5>
+    <p class="text-muted mb-3" style="font-size:13px;">Review your items before paying</p>
+
+    {% for product in products %}
+    <div class="product-row d-flex justify-content-between align-items-center">
+      <span class="text-secondary">{{ product.name }}</span>
+      <span class="fw-semibold">${{ product.price }}</span>
+    </div>
+    {% endfor %}
+
+    <div class="total-row d-flex justify-content-between align-items-center">
+      <span class="fw-semibold fs-6">Total</span>
+      <span class="fw-bold fs-5 khqr-red">${{ total }}</span>
+    </div>
+
+    <div class="method-box d-flex align-items-center gap-2 mt-3">
+      <input class="form-check-input mt-0" type="radio" checked readonly>
+      <span class="khqr-badge">KHQR</span>
+      <span class="text-secondary" style="font-size:13px;">Bakong — any Cambodian bank app</span>
+    </div>
+
+    <form method="POST" action="{% url 'payments:checkout' %}" class="mt-3">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-khqr w-100 text-white">
+        <i class="bi bi-qr-code me-2"></i>Pay with KHQR — ${{ total }}
+      </button>
+    </form>
+
+    <p class="footer-note text-center mt-3 mb-0">
+      <i class="bi bi-shield-lock-fill me-1"></i>Secured by Bakong NBC · National Bank of Cambodia
+    </p>
+  </div>
+</body>
+</html>
