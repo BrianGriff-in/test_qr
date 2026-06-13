@@ -255,3 +255,22 @@ def dev_webhook_logs(request):
         'count': logs.count(),
         'logs': [{'id': str(log.id), 'order_reference': log.order.reference if log.order else None, 'signature_valid': log.signature_valid, 'payload': log.payload, 'ip_address': log.ip_address, 'created_at': log.created_at.isoformat()} for log in logs],
     })
+
+
+@require_http_methods(['GET'])
+def dev_check_transaction(request, reference):
+    if not settings.DEBUG:
+        return JsonResponse({'error': 'DEBUG only'}, status=403)
+    order = get_object_or_404(Order, reference=reference)
+    if not order.qr_md5:
+        return JsonResponse({'error': 'No QR MD5'})
+    from bakong_khqr.response import ResponseCode
+    khqr = KHQR(settings.BAKONG_TOKEN)
+    result = khqr.check_transaction(order.qr_md5)
+    return JsonResponse({
+        'qr_md5': order.qr_md5,
+        'result': result,
+        'ResponseCode.SUCCESS': str(ResponseCode.SUCCESS),
+        'responseCode_match': result.get('responseCode') == ResponseCode.SUCCESS if result else None,
+        'order_created_at': order.created_at.isoformat(),
+    })
