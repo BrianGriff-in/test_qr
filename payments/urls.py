@@ -13,4 +13,6 @@ urlpatterns = [
     path('dev/simulate/<str:reference>/',           views.dev_simulate_payment,  name='simulate_payment'),
     path('dev/expire/<str:reference>/',             views.dev_expire_payment,    name='dev_expire'),
     path('dev/webhook-logs/',                       views.dev_webhook_logs,      name='dev_webhook_logs'),
+    path('dev/check-transaction/<str:reference>/', views.dev_check_transaction, name='dev_check_transaction'),
+    path('dev/bakong-methods/', views.dev_bakong_methods, name='dev_bakong_methods'),
 ]
