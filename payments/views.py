@@ -142,6 +142,10 @@ def payment_status(request, reference):
             from bakong_khqr.response import ResponseCode
             result = khqr.check_transaction(order.qr_md5)
 
+             # ADD THIS — see what you're actually getting
+            logger.info('Bakong result for %s: %s', reference, result)
+            logger.info('ResponseCode.SUCCESS value: %s (type: %s)', ResponseCode.SUCCESS, type(ResponseCode.SUCCESS))
+
             if result and result.get('responseCode') == ResponseCode.SUCCESS:
                 transaction_time = result.get('data', {}).get('createdDateMs')
                 if transaction_time:
