@@ -6,6 +6,7 @@ import uuid
 import base64
 import logging
 
+import time
 import qrcode
 from bakong_khqr import KHQR
 
@@ -35,6 +36,7 @@ def _generate_reference() -> str:
     return f'ORD-{uuid.uuid4().hex[:8].upper()}'
 
 
+
 def _build_khqr(order: Order) -> dict:
     khqr = KHQR(settings.BAKONG_TOKEN)
     qr_string = khqr.create_qr(
@@ -45,13 +47,12 @@ def _build_khqr(order: Order) -> dict:
         currency       = order.currency,
         store_label    = 'Store',
         phone_number   = settings.KHQR_PHONE_NUMBER,
-        bill_number    = order.reference,
+        bill_number    = f'{order.reference}-{int(time.time())}',  # ← unique every time
         terminal_label = 'POS-01',
         static         = False,
     )
     qr_md5 = khqr.generate_md5(qr_string)
     return {'qr_string': qr_string, 'qr_md5': qr_md5}
-
 
 def _verify_webhook_signature(body: bytes, signature: str) -> bool:
     if not signature:
@@ -124,30 +125,45 @@ def payment_status(request, reference):
     def pending_response():
         return JsonResponse({'status': order.status, 'is_paid': False, 'redirect_url': None, 'reference': order.reference})
 
+    # Already paid in DB
     if order.is_paid:
         return success_response()
 
+    # Order too old — stop checking
     age = (timezone.now() - order.created_at).total_seconds()
     if age > 600:
         return pending_response()
 
-    recently_paid = Order.objects.filter(
-        status  = Order.STATUS_PAID,
-        paid_at__gte = timezone.now() - timezone.timedelta(seconds=60),
-    ).exclude(id=order.id).exists()
-
-    if recently_paid:
+    # ── FIX BUG 1: don't check Bakong until order is at least 5 seconds old ──
+    if age < 5:
         return pending_response()
 
+    # Ask Bakong API
     if order.qr_md5 and settings.BAKONG_TOKEN:
         try:
-            khqr    = KHQR(settings.BAKONG_TOKEN)
+            khqr = KHQR(settings.BAKONG_TOKEN)
+
+            # ── FIX BUG 1: verify the MD5 belongs to THIS order only ──
+            # check_payment returns True if transaction exists — but we also
+            # make sure no other order already claimed this payment
+            already_claimed = Order.objects.filter(
+                qr_md5=order.qr_md5,
+                status=Order.STATUS_PAID,
+            ).exclude(id=order.id).exists()
+
+            if already_claimed:
+                logger.warning('MD5 %s already claimed by another order', order.qr_md5)
+                return pending_response()
+
             is_paid = khqr.check_payment(order.qr_md5)
+
             if is_paid:
                 order.status  = Order.STATUS_PAID
                 order.paid_at = timezone.now()
                 order.save()
+                logger.info('Order %s marked PAID via polling', reference)
                 return success_response()
+
         except Exception as e:
             logger.error('Bakong check_payment failed for %s: %s', reference, e)
 
