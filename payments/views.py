@@ -5,8 +5,8 @@ import json
 import uuid
 import base64
 import logging
-
 import time
+import datetime
 import qrcode
 from bakong_khqr import KHQR
 
@@ -16,7 +16,7 @@ from django.shortcuts   import render, redirect, get_object_or_404
 from django.utils       import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-        
+
 from .models import Order, WebhookLog
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,6 @@ def _generate_reference() -> str:
     return f'ORD-{uuid.uuid4().hex[:8].upper()}'
 
 
-
 def _build_khqr(order: Order) -> dict:
     khqr = KHQR(settings.BAKONG_TOKEN)
     qr_string = khqr.create_qr(
@@ -47,12 +46,13 @@ def _build_khqr(order: Order) -> dict:
         currency       = order.currency,
         store_label    = 'Store',
         phone_number   = settings.KHQR_PHONE_NUMBER,
-        bill_number    = f'{order.reference}-{int(time.time())}',  # ← unique every time
+        bill_number    = f'{order.reference}-{int(time.time())}',
         terminal_label = 'POS-01',
         static         = False,
     )
     qr_md5 = khqr.generate_md5(qr_string)
     return {'qr_string': qr_string, 'qr_md5': qr_md5}
+
 
 def _verify_webhook_signature(body: bytes, signature: str) -> bool:
     if not signature:
@@ -129,42 +129,40 @@ def payment_status(request, reference):
         return success_response()
 
     age = (timezone.now() - order.created_at).total_seconds()
-    if age > 600:
-        return pending_response()
-
-    if age < 10:
+    if age > 600 or age < 10:
         return pending_response()
 
     if order.qr_md5 and settings.BAKONG_TOKEN:
         try:
-            khqr = KHQR(settings.BAKONG_TOKEN)
-
-            from bakong_khqr.response import ResponseCode
+            khqr   = KHQR(settings.BAKONG_TOKEN)
             result = khqr.check_transaction(order.qr_md5)
 
-             # ADD THIS — see what you're actually getting
-            logger.info('Bakong result for %s: %s', reference, result)
-            logger.info('ResponseCode.SUCCESS value: %s (type: %s)', ResponseCode.SUCCESS, type(ResponseCode.SUCCESS))
+            logger.info('Bakong raw result for %s: %s', reference, result)
 
-            if result and result.get('responseCode') == ResponseCode.SUCCESS:
+            # Avoid importing ResponseCode — the submodule doesn't exist on all installs
+            # responseCode 0 = SUCCESS per Bakong API docs
+            if result and result.get('responseCode') == 0:
                 transaction_time = result.get('data', {}).get('createdDateMs')
                 if transaction_time:
-                    import datetime
                     tx_time = datetime.datetime.fromtimestamp(transaction_time / 1000, tz=datetime.timezone.utc)
                     if tx_time > order.created_at:
                         order.status  = Order.STATUS_PAID
                         order.paid_at = timezone.now()
                         order.save()
-                        logger.info('Order %s marked PAID — tx after order creation', reference)
+                        logger.info('Order %s marked PAID — tx_time=%s', reference, tx_time)
                         return success_response()
                     else:
-                        logger.warning('Order %s rejected — tx is before order creation', reference)
+                        logger.warning('Order %s rejected — tx_time=%s is before order created_at=%s', reference, tx_time, order.created_at)
+                else:
+                    logger.warning('Order %s — responseCode=0 but no createdDateMs in data: %s', reference, result)
+            else:
+                logger.info('Order %s — not paid yet, responseCode=%s', reference, result.get('responseCode') if result else 'None')
 
         except Exception as e:
             logger.error('Bakong check failed for %s: %s', reference, e)
-            # ← NO FALLBACK. If Bakong API fails, just return pending and retry next poll.
 
     return pending_response()
+
 
 @require_http_methods(['GET'])
 def payment_success(request, reference):
@@ -231,7 +229,13 @@ def dev_simulate_payment(request, reference):
     order.paid_at         = timezone.now()
     order.webhook_payload = {'reference': reference, 'status': 'paid', 'simulated': True}
     order.save()
-    WebhookLog.objects.create(order=order, raw_body=json.dumps({'reference': reference, 'status': 'paid', 'simulated': True}), signature='simulated', signature_valid=True, payload={'reference': reference, 'status': 'paid', 'simulated': True})
+    WebhookLog.objects.create(
+        order=order,
+        raw_body=json.dumps({'reference': reference, 'status': 'paid', 'simulated': True}),
+        signature='simulated',
+        signature_valid=True,
+        payload={'reference': reference, 'status': 'paid', 'simulated': True},
+    )
     return JsonResponse({'ok': True, 'message': f'Order {reference} marked as paid (simulated)'})
 
 
@@ -253,7 +257,17 @@ def dev_webhook_logs(request):
     logs = WebhookLog.objects.select_related('order').order_by('-created_at')[:20]
     return JsonResponse({
         'count': logs.count(),
-        'logs': [{'id': str(log.id), 'order_reference': log.order.reference if log.order else None, 'signature_valid': log.signature_valid, 'payload': log.payload, 'ip_address': log.ip_address, 'created_at': log.created_at.isoformat()} for log in logs],
+        'logs': [
+            {
+                'id':              str(log.id),
+                'order_reference': log.order.reference if log.order else None,
+                'signature_valid': log.signature_valid,
+                'payload':         log.payload,
+                'ip_address':      log.ip_address,
+                'created_at':      log.created_at.isoformat(),
+            }
+            for log in logs
+        ],
     })
 
 
@@ -264,13 +278,12 @@ def dev_check_transaction(request, reference):
     order = get_object_or_404(Order, reference=reference)
     if not order.qr_md5:
         return JsonResponse({'error': 'No QR MD5'})
-    from bakong_khqr.response import ResponseCode
-    khqr = KHQR(settings.BAKONG_TOKEN)
+    khqr   = KHQR(settings.BAKONG_TOKEN)
     result = khqr.check_transaction(order.qr_md5)
     return JsonResponse({
-        'qr_md5': order.qr_md5,
-        'result': result,
-        'ResponseCode.SUCCESS': str(ResponseCode.SUCCESS),
-        'responseCode_match': result.get('responseCode') == ResponseCode.SUCCESS if result else None,
+        'qr_md5':           order.qr_md5,
+        'result':           result,
+        'responseCode':     result.get('responseCode') if result else None,
+        'is_zero':          result.get('responseCode') == 0 if result else None,
         'order_created_at': order.created_at.isoformat(),
     })
