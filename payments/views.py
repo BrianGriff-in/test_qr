@@ -279,3 +279,12 @@ def dev_check_transaction(request, reference):
 def dev_bakong_methods(request):
     khqr = KHQR(settings.BAKONG_TOKEN)
     return JsonResponse({'methods': [m for m in dir(khqr) if not m.startswith('_')]})
+
+@require_http_methods(['GET'])
+def dev_bulk_check(request, reference):
+    order = get_object_or_404(Order, reference=reference)
+    if not order.qr_md5:
+        return JsonResponse({'error': 'No QR MD5'})
+    khqr   = KHQR(settings.BAKONG_TOKEN)
+    result = khqr.check_bulk_payments([order.qr_md5])
+    return JsonResponse({'result': result}, safe=False)

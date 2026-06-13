@@ -15,4 +15,5 @@ urlpatterns = [
     path('dev/webhook-logs/',                       views.dev_webhook_logs,      name='dev_webhook_logs'),
     path('dev/check-transaction/<str:reference>/', views.dev_check_transaction, name='dev_check_transaction'),
     path('dev/bakong-methods/', views.dev_bakong_methods, name='dev_bakong_methods'),
+    path('dev/bulk-check/<str:reference>/', views.dev_bulk_check, name='dev_bulk_check'),
 ]
