@@ -147,7 +147,6 @@ def payment_status(request, reference):
                 order.status  = Order.STATUS_PAID
                 order.paid_at = timezone.now()
                 order.save()
-                logger.info('Order %s marked PAID via polling', reference)
                 return success_response()
         except Exception as e:
             logger.error('Bakong check_payment failed for %s: %s', reference, e)
