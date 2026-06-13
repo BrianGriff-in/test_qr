@@ -134,29 +134,17 @@ def payment_status(request, reference):
 
     if order.qr_md5 and settings.BAKONG_TOKEN:
         try:
-            khqr   = KHQR(settings.BAKONG_TOKEN)
-            result = khqr.check_transaction(order.qr_md5)
+            khqr    = KHQR(settings.BAKONG_TOKEN)
+            is_paid = khqr.check_payment(order.qr_md5)
 
-            logger.info('Bakong raw result for %s: %s', reference, result)
+            logger.info('Bakong check_payment for %s: %s', reference, is_paid)
 
-            # Avoid importing ResponseCode — the submodule doesn't exist on all installs
-            # responseCode 0 = SUCCESS per Bakong API docs
-            if result and result.get('responseCode') == 0:
-                transaction_time = result.get('data', {}).get('createdDateMs')
-                if transaction_time:
-                    tx_time = datetime.datetime.fromtimestamp(transaction_time / 1000, tz=datetime.timezone.utc)
-                    if tx_time > order.created_at:
-                        order.status  = Order.STATUS_PAID
-                        order.paid_at = timezone.now()
-                        order.save()
-                        logger.info('Order %s marked PAID — tx_time=%s', reference, tx_time)
-                        return success_response()
-                    else:
-                        logger.warning('Order %s rejected — tx_time=%s is before order created_at=%s', reference, tx_time, order.created_at)
-                else:
-                    logger.warning('Order %s — responseCode=0 but no createdDateMs in data: %s', reference, result)
-            else:
-                logger.info('Order %s — not paid yet, responseCode=%s', reference, result.get('responseCode') if result else 'None')
+            if is_paid:
+                order.status  = Order.STATUS_PAID
+                order.paid_at = timezone.now()
+                order.save()
+                logger.info('Order %s marked PAID', reference)
+                return success_response()
 
         except Exception as e:
             logger.error('Bakong check failed for %s: %s', reference, e)
@@ -278,15 +266,14 @@ def dev_check_transaction(request, reference):
     order = get_object_or_404(Order, reference=reference)
     if not order.qr_md5:
         return JsonResponse({'error': 'No QR MD5'})
-    khqr   = KHQR(settings.BAKONG_TOKEN)
-    result = khqr.check_transaction(order.qr_md5)
+    khqr    = KHQR(settings.BAKONG_TOKEN)
+    is_paid = khqr.check_payment(order.qr_md5)
     return JsonResponse({
         'qr_md5':           order.qr_md5,
-        'result':           result,
-        'responseCode':     result.get('responseCode') if result else None,
-        'is_zero':          result.get('responseCode') == 0 if result else None,
+        'is_paid':          is_paid,
         'order_created_at': order.created_at.isoformat(),
     })
+
 
 @require_http_methods(['GET'])
 def dev_bakong_methods(request):
