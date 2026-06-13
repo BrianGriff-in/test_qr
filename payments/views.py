@@ -287,3 +287,8 @@ def dev_check_transaction(request, reference):
         'is_zero':          result.get('responseCode') == 0 if result else None,
         'order_created_at': order.created_at.isoformat(),
     })
+
+@require_http_methods(['GET'])
+def dev_bakong_methods(request):
+    khqr = KHQR(settings.BAKONG_TOKEN)
+    return JsonResponse({'methods': [m for m in dir(khqr) if not m.startswith('_')]})
